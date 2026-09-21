@@ -7,6 +7,7 @@
 4. 완성된 메시지를 텔레그램으로 전송한다.
 """
 
+import calendar
 import json
 import os
 import sys
@@ -17,14 +18,21 @@ from zoneinfo import ZoneInfo
 import feedparser
 import requests
 
-from config import CANDIDATES_PER_COUNTRY, COUNTRIES, DEFAULT_GEMINI_MODEL
+from config import (
+    CANDIDATES_PER_COUNTRY,
+    COUNTRIES,
+    FRESHNESS_WINDOW_HOURS,
+    GEMINI_MODEL_CANDIDATES,
+)
 
 USER_AGENT = (
-    "Mozilla/5.0 (compatible; GlobalNewsBot/1.0; "
-    "+https://github.com/happyfamily1984/global-news-bot)"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
 REQUEST_TIMEOUT = 10
 MAX_RETRIES = 2
+# 재시도해봐야 결과가 바뀌지 않는 HTTP 상태코드 (차단/삭제된 리소스)
+PERMANENT_FAILURE_STATUS = {401, 403, 404, 410}
 
 
 def fetch_url(url: str):
@@ -36,15 +44,51 @@ def fetch_url(url: str):
             )
             resp.raise_for_status()
             return resp.content
+        except requests.exceptions.HTTPError as exc:
+            print(f"[warn] fetch failed ({url}): {exc}", file=sys.stderr)
+            status = exc.response.status_code if exc.response is not None else None
+            if status in PERMANENT_FAILURE_STATUS:
+                return None  # 재시도해도 소용없음
         except Exception as exc:  # noqa: BLE001 - 어떤 실패든 조용히 재시도/포기
             print(f"[warn] fetch failed ({url}): {exc}", file=sys.stderr)
-            if attempt < MAX_RETRIES:
-                time.sleep(1.5 * (attempt + 1))
+        if attempt < MAX_RETRIES:
+            time.sleep(1.5 * (attempt + 1))
     return None
 
 
+def _entry_age_hours(entry) -> float | None:
+    """항목의 발행/수정 시각 기준 경과 시간(시간 단위). 알 수 없으면 None."""
+    for field in ("published_parsed", "updated_parsed"):
+        struct = getattr(entry, field, None)
+        if struct:
+            try:
+                published_epoch = calendar.timegm(struct)
+                return max(0.0, (time.time() - published_epoch) / 3600)
+            except (TypeError, ValueError, OverflowError):
+                continue
+    return None
+
+
+def _entries_to_headlines(entries) -> list[dict]:
+    headlines = []
+    for entry in entries[:CANDIDATES_PER_COUNTRY]:
+        title = getattr(entry, "title", "").strip()
+        if not title:
+            continue
+        summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
+        link = getattr(entry, "link", "")
+        headlines.append({"title": title, "summary": summary[:300], "link": link})
+    return headlines
+
+
 def fetch_country_headlines(country: dict) -> list[dict]:
-    """국가의 feeds를 순서대로 시도해 헤드라인 후보 목록을 반환한다."""
+    """국가의 feeds를 순서대로 시도해 헤드라인 후보 목록을 반환한다.
+
+    각 피드에서 최근(FRESHNESS_WINDOW_HOURS 이내) 항목을 우선 채택하고,
+    끝까지 최근 항목이 없으면 가장 먼저 성공한 피드의 결과를 그대로 사용한다.
+    """
+    stale_fallback = None
+
     for feed_url in country["feeds"]:
         content = fetch_url(feed_url)
         if not content:
@@ -59,17 +103,24 @@ def fetch_country_headlines(country: dict) -> list[dict]:
         if not entries:
             continue
 
-        headlines = []
-        for entry in entries[:CANDIDATES_PER_COUNTRY]:
-            title = getattr(entry, "title", "").strip()
-            if not title:
-                continue
-            summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
-            link = getattr(entry, "link", "")
-            headlines.append({"title": title, "summary": summary[:300], "link": link})
+        recent_entries = [
+            e
+            for e in entries
+            if (age := _entry_age_hours(e)) is None or age <= FRESHNESS_WINDOW_HOURS
+        ]
+        headlines = _entries_to_headlines(recent_entries or entries)
+        if not headlines:
+            continue
 
-        if headlines:
+        if recent_entries:
             return headlines
+        if stale_fallback is None:
+            print(f"[warn] no recent entries in {feed_url}, trying next feed", file=sys.stderr)
+            stale_fallback = headlines
+
+    if stale_fallback:
+        print(f"[warn] using stale headlines for {country['code']} (no fresh feed found)", file=sys.stderr)
+        return stale_fallback
 
     print(f"[warn] all feeds failed for {country['code']}", file=sys.stderr)
     return []
@@ -109,13 +160,8 @@ def build_gemini_prompt(all_headlines: dict) -> str:
     return "\n".join(lines)
 
 
-def call_gemini(prompt: str) -> list[dict] | None:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("[warn] GEMINI_API_KEY not set, skipping AI 분석", file=sys.stderr)
-        return None
-
-    model = os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+def _call_gemini_model(model: str, api_key: str, prompt: str) -> tuple[list[dict] | None, bool]:
+    """(결과, 다른_모델로_재시도할지) 튜플을 반환한다."""
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{model}:generateContent?key={api_key}"
@@ -136,13 +182,40 @@ def call_gemini(prompt: str) -> list[dict] | None:
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             parsed = json.loads(text)
             if isinstance(parsed, list):
-                return parsed
-            print("[warn] gemini response is not a list", file=sys.stderr)
-            return None
+                return parsed, False
+            print(f"[warn] gemini({model}) response is not a list", file=sys.stderr)
+            return None, False
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            print(f"[warn] gemini({model}) call failed (attempt {attempt}): {exc}", file=sys.stderr)
+            if status == 404:
+                return None, True  # 이 모델이 없음 -> 다음 모델 후보로 넘어감
         except Exception as exc:  # noqa: BLE001
-            print(f"[warn] gemini call failed (attempt {attempt}): {exc}", file=sys.stderr)
-            if attempt < MAX_RETRIES:
-                time.sleep(2 * (attempt + 1))
+            print(f"[warn] gemini({model}) call failed (attempt {attempt}): {exc}", file=sys.stderr)
+        if attempt < MAX_RETRIES:
+            time.sleep(2 * (attempt + 1))
+
+    return None, False
+
+
+def call_gemini(prompt: str) -> list[dict] | None:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("[warn] GEMINI_API_KEY not set, skipping AI 분석", file=sys.stderr)
+        return None
+
+    env_model = os.environ.get("GEMINI_MODEL")
+    candidates = ([env_model] if env_model else []) + GEMINI_MODEL_CANDIDATES
+    # 중복 제거(순서 유지)
+    candidates = list(dict.fromkeys(candidates))
+
+    for model in candidates:
+        result, try_next = _call_gemini_model(model, api_key, prompt)
+        if result is not None:
+            print(f"[info] gemini model used: {model}")
+            return result
+        if not try_next:
+            break  # 모델은 찾았지만 다른 이유로 실패 -> 더 시도해봐야 소용없음
 
     return None
 

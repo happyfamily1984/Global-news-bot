@@ -12,6 +12,7 @@ COUNTRIES = [
         "feeds": [
             "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
             "https://feeds.a.dj.com/rss/RSSWorldNews.xml",
+            "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
         ],
     },
     {
@@ -19,8 +20,9 @@ COUNTRIES = [
         "name_kr": "중국",
         "flag": "🇨🇳",
         "feeds": [
-            "https://www.chinadaily.com.cn/rss/china_rss.xml",
+            "https://www.globaltimes.cn/rss/china.xml",
             "http://www.xinhuanet.com/english/rss/chinarss.xml",
+            "https://news.google.com/rss?hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
         ],
     },
     {
@@ -30,6 +32,7 @@ COUNTRIES = [
         "feeds": [
             "http://feeds.bbci.co.uk/news/rss.xml",
             "https://www.theguardian.com/uk/rss",
+            "https://news.google.com/rss?hl=en-GB&gl=GB&ceid=GB:en",
         ],
     },
     {
@@ -39,6 +42,7 @@ COUNTRIES = [
         "feeds": [
             "https://www.lemonde.fr/rss/une.xml",
             "https://www.france24.com/fr/rss",
+            "https://news.google.com/rss?hl=fr&gl=FR&ceid=FR:fr",
         ],
     },
     {
@@ -48,6 +52,7 @@ COUNTRIES = [
         "feeds": [
             "https://www3.nhk.or.jp/rss/news/cat0.xml",
             "https://www.japantimes.co.jp/feed/",
+            "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja",
         ],
     },
     {
@@ -57,6 +62,7 @@ COUNTRIES = [
         "feeds": [
             "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
             "https://www.thehindu.com/news/national/feeder/default.rss",
+            "https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en",
         ],
     },
     {
@@ -66,6 +72,7 @@ COUNTRIES = [
         "feeds": [
             "https://g1.globo.com/rss/g1/",
             "https://www.brasildefato.com.br/rss2.xml",
+            "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419",
         ],
     },
     {
@@ -75,6 +82,7 @@ COUNTRIES = [
         "feeds": [
             "https://www.arabnews.com/rss.xml",
             "https://saudigazette.com.sa/rssFeed/1",
+            "https://news.google.com/rss?hl=ar&gl=SA&ceid=SA:ar",
         ],
     },
 ]
@@ -82,5 +90,14 @@ COUNTRIES = [
 # 국가당 Gemini에 넘길 헤드라인 후보 개수
 CANDIDATES_PER_COUNTRY = 5
 
-# Gemini 모델 (무료 티어에서 사용 가능한 모델, 환경변수로 override 가능)
-DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+# 이 시간(시간) 이내에 게시된 항목만 "최신"으로 취급한다. 발행일이 없는 항목은 판단 불가로 보고 포함한다.
+FRESHNESS_WINDOW_HOURS = 72
+
+# Gemini 모델 후보 (앞에서부터 순서대로 시도, 존재하지 않는 모델은 자동으로 건너뜀).
+# GEMINI_MODEL 환경변수를 지정하면 그 모델을 가장 먼저 시도한다.
+GEMINI_MODEL_CANDIDATES = [
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+]
