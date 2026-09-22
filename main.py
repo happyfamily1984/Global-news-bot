@@ -154,9 +154,14 @@ def build_gemini_prompt(all_headlines: dict) -> str:
         "선택한 각 뉴스는 한국어로 제목(한 줄, 20자 내외)과 2문장 이내 요약을 작성하세요.",
         "후보가 없는 국가는 결과에서 제외하세요.",
         "",
-        "반드시 아래 JSON 배열 형식으로만 응답하세요. 국가마다 여러 개의 객체가 있을 수 있습니다.",
-        "다른 텍스트는 포함하지 마세요:",
-        '[{"country_code": "US", "title_kr": "...", "summary_kr": "...", "link": "..."}, ...]',
+        "마지막으로, 위에서 선택한 뉴스 전체를 종합해서 현재 국제정세를 분석하는 글을 작성하세요.",
+        "개별 뉴스 요약이 아니라, 국가들을 넘나드는 공통된 흐름/긴장/기회 요인을 짚어주세요",
+        "(예: 특정 국가 간 외교 이슈가 여러 국가에 걸쳐 동시에 보도되는 경우, 경제/안보 트렌드 등).",
+        "한국어로 4~6문장 분량으로 작성하세요.",
+        "",
+        "반드시 아래 JSON 객체 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요:",
+        '{"items": [{"country_code": "US", "title_kr": "...", "summary_kr": "...", "link": "..."}, ...], '
+        '"analysis": "..."}',
         "",
         "### 헤드라인 후보",
     ]
@@ -209,8 +214,8 @@ def discover_gemini_models(api_key: str) -> list[str]:
     return names
 
 
-def _call_gemini_model(model: str, api_key: str, prompt: str) -> tuple[list[dict] | None, bool]:
-    """(결과, 다른_모델로_넘어갈지) 튜플을 반환한다."""
+def _call_gemini_model(model: str, api_key: str, prompt: str) -> tuple[dict | None, bool]:
+    """(결과 {"items": [...], "analysis": "..."}, 다른_모델로_넘어갈지) 튜플을 반환한다."""
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{model}:generateContent?key={api_key}"
@@ -231,9 +236,9 @@ def _call_gemini_model(model: str, api_key: str, prompt: str) -> tuple[list[dict
             data = resp.json()
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             parsed = json.loads(text)
-            if isinstance(parsed, list):
+            if isinstance(parsed, dict) and isinstance(parsed.get("items"), list):
                 return parsed, False
-            print(f"[warn] gemini({model}) response is not a list", file=sys.stderr)
+            print(f"[warn] gemini({model}) response is not the expected object shape", file=sys.stderr)
             return None, True  # 응답 형식 문제 -> 혹시 다른 모델은 다를 수 있으니 시도
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
@@ -260,7 +265,7 @@ def _call_gemini_model(model: str, api_key: str, prompt: str) -> tuple[list[dict
     return None, True  # 이 모델에서 재시도를 다 썼으니 다음 모델 후보로 넘어감
 
 
-def call_gemini(prompt: str) -> list[dict] | None:
+def call_gemini(prompt: str) -> dict | None:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         print("[warn] GEMINI_API_KEY not set, skipping AI 분석", file=sys.stderr)
@@ -331,13 +336,19 @@ def build_country_sections(results: list[dict]) -> list[str]:
     return sections
 
 
-def build_telegram_messages(results: list[dict], slot_label: str, now_kst: datetime) -> list[str]:
+def build_telegram_messages(
+    results: list[dict], analysis: str | None, slot_label: str, now_kst: datetime
+) -> list[str]:
     """텔레그램 글자수 제한을 넘지 않도록 결과를 여러 메시지로 나눈다."""
     header = f"🌍 글로벌 뉴스 브리핑 ({now_kst.strftime('%Y-%m-%d')} {slot_label})"
     sections = build_country_sections(results)
 
     if not sections:
         return [header + "\n\n오늘은 수집된 헤드라인이 없습니다."]
+
+    analysis = (analysis or "").strip()
+    if analysis:
+        sections = sections + [f"🧭 <b>종합 국제정세 분석</b>\n{html.escape(analysis)}"]
 
     groups: list[list[str]] = []
     current: list[str] = []
@@ -405,16 +416,20 @@ def main() -> None:
     collected = sum(1 for v in all_headlines.values() if v)
     print(f"[info] collected headlines for {collected}/{len(COUNTRIES)} countries")
 
-    results = None
+    gemini_output = None
     if collected > 0:
         prompt = build_gemini_prompt(all_headlines)
-        results = call_gemini(prompt)
+        gemini_output = call_gemini(prompt)
 
-    if not results:
+    if gemini_output:
+        results = gemini_output.get("items", [])
+        analysis = gemini_output.get("analysis", "")
+    else:
         print("[info] using fallback (raw headlines) results")
         results = fallback_results(all_headlines)
+        analysis = None  # AI 분석 실패 시 종합 분석은 생략
 
-    messages = build_telegram_messages(results, slot_label_for(now_kst), now_kst)
+    messages = build_telegram_messages(results, analysis, slot_label_for(now_kst), now_kst)
     for i, message in enumerate(messages, 1):
         print(f"[info] sending telegram message {i}/{len(messages)}:\n" + message)
         send_telegram_message(message)
