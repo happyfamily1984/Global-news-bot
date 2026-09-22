@@ -8,6 +8,7 @@
 """
 
 import calendar
+import html
 import json
 import os
 import sys
@@ -265,16 +266,16 @@ def build_country_sections(results: list[dict]) -> list[str]:
             continue
         flag = flag_by_code[country["code"]]
         name = name_by_code[country["code"]]
-        lines = [f"{flag} {name}"]
+        lines = [f"{flag} <b>{html.escape(name)}</b>"]
         for i, item in enumerate(items, 1):
-            title = item.get("title_kr", "").strip()
-            summary = item.get("summary_kr", "").strip()
-            link = item.get("link", "")
+            title = html.escape(item.get("title_kr", "").strip())
+            summary = html.escape(item.get("summary_kr", "").strip())
+            link = item.get("link", "").strip()
             lines.append(f"{i}. {title}")
             if summary:
                 lines.append(f"   {summary}")
             if link:
-                lines.append(f"   {link}")
+                lines.append(f'   <a href="{html.escape(link, quote=True)}">링크</a>')
         sections.append("\n".join(lines))
 
     return sections
@@ -320,6 +321,7 @@ def send_telegram_message(text: str) -> None:
     payload = {
         "chat_id": chat_id,
         "text": text,
+        "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
 
