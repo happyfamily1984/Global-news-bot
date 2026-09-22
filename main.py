@@ -23,7 +23,10 @@ from config import (
     COUNTRIES,
     FRESHNESS_WINDOW_HOURS,
     GEMINI_MODEL_CANDIDATES,
+    RESULTS_PER_COUNTRY,
 )
+
+TELEGRAM_MAX_CHARS = 3500
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -138,11 +141,20 @@ def build_gemini_prompt(all_headlines: dict) -> str:
     lines = [
         "당신은 글로벌 뉴스 에디터입니다.",
         "아래는 국가별 주요 언론사에서 수집한 오늘의 헤드라인 후보 목록입니다.",
-        "각 국가마다 전 세계적으로 가장 중요하고 의미 있는 뉴스를 1건씩만 선택하세요.",
-        "선택한 뉴스는 한국어로 제목(한 줄, 15자 내외)과 2문장 이내 요약을 작성하세요.",
+        f"각 국가마다 가장 중요하고 의미 있는 뉴스를 최대 {RESULTS_PER_COUNTRY}건 선택하세요.",
+        "후보가 그보다 적으면 있는 만큼만 선택하세요.",
+        "",
+        "선택 기준(중요):",
+        "- 그 국가의 국내 뉴스뿐 아니라, 그 국가가 관련되거나 영향을 받는 국제 뉴스도 좋습니다.",
+        "- 다만 그 국가와 사실상 관련이 없는, 다른 나라만의 이야기를 단순히 전재한 기사"
+        "(예: 프랑스 언론사 기사지만 내용은 프랑스와 무관한 순수 미국 국내 정치)는 우선순위를 낮추세요.",
+        "- 같은 국가 안에서는 서로 다른 주제/사건을 다루도록 다양성을 주세요(같은 사건의 후속 기사 반복 금지).",
+        "",
+        "선택한 각 뉴스는 한국어로 제목(한 줄, 20자 내외)과 2문장 이내 요약을 작성하세요.",
         "후보가 없는 국가는 결과에서 제외하세요.",
         "",
-        "반드시 아래 JSON 배열 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요:",
+        "반드시 아래 JSON 배열 형식으로만 응답하세요. 국가마다 여러 개의 객체가 있을 수 있습니다.",
+        "다른 텍스트는 포함하지 마세요:",
         '[{"country_code": "US", "title_kr": "...", "summary_kr": "...", "link": "..."}, ...]',
         "",
         "### 헤드라인 후보",
@@ -221,53 +233,81 @@ def call_gemini(prompt: str) -> list[dict] | None:
 
 
 def fallback_results(all_headlines: dict) -> list[dict]:
-    """Gemini 호출 실패 시 국가별 첫 번째 헤드라인을 원문 그대로 사용."""
+    """Gemini 호출 실패 시 국가별 상위 헤드라인을 원문 그대로 사용."""
     results = []
     for country in COUNTRIES:
         candidates = all_headlines.get(country["code"], [])
-        if not candidates:
-            continue
-        top = candidates[0]
-        results.append(
-            {
-                "country_code": country["code"],
-                "title_kr": top["title"],
-                "summary_kr": "(AI 요약 실패로 원문 제목만 표시됩니다.)",
-                "link": top["link"],
-            }
-        )
+        for top in candidates[:RESULTS_PER_COUNTRY]:
+            results.append(
+                {
+                    "country_code": country["code"],
+                    "title_kr": top["title"],
+                    "summary_kr": "(AI 요약 실패로 원문 제목만 표시됩니다.)",
+                    "link": top["link"],
+                }
+            )
     return results
 
 
-def format_telegram_message(results: list[dict], slot_label: str, now_kst: datetime) -> str:
+def build_country_sections(results: list[dict]) -> list[str]:
+    """국가별로 결과를 묶어 '국기 이름\n1. ...\n2. ...' 형태의 섹션 문자열 목록을 만든다."""
     flag_by_code = {c["code"]: c["flag"] for c in COUNTRIES}
     name_by_code = {c["code"]: c["name_kr"] for c in COUNTRIES}
 
-    header = f"🌍 글로벌 뉴스 브리핑 ({now_kst.strftime('%Y-%m-%d')} {slot_label})"
-    lines = [header, ""]
+    by_code: dict[str, list[dict]] = {}
+    for item in results:
+        by_code.setdefault(item.get("country_code", ""), []).append(item)
 
-    if not results:
-        lines.append("오늘은 수집된 헤드라인이 없습니다.")
-    else:
-        for item in results:
-            code = item.get("country_code", "")
-            flag = flag_by_code.get(code, "🏳️")
-            name = name_by_code.get(code, code)
+    sections = []
+    for country in COUNTRIES:
+        items = by_code.get(country["code"])
+        if not items:
+            continue
+        flag = flag_by_code[country["code"]]
+        name = name_by_code[country["code"]]
+        lines = [f"{flag} {name}"]
+        for i, item in enumerate(items, 1):
             title = item.get("title_kr", "").strip()
             summary = item.get("summary_kr", "").strip()
             link = item.get("link", "")
-
-            lines.append(f"{flag} {name}: {title}")
+            lines.append(f"{i}. {title}")
             if summary:
-                lines.append(summary)
+                lines.append(f"   {summary}")
             if link:
-                lines.append(link)
-            lines.append("")
+                lines.append(f"   {link}")
+        sections.append("\n".join(lines))
 
-    message = "\n".join(lines).strip()
-    if len(message) > 4000:
-        message = message[:3990] + "\n...(생략)"
-    return message
+    return sections
+
+
+def build_telegram_messages(results: list[dict], slot_label: str, now_kst: datetime) -> list[str]:
+    """텔레그램 글자수 제한을 넘지 않도록 결과를 여러 메시지로 나눈다."""
+    header = f"🌍 글로벌 뉴스 브리핑 ({now_kst.strftime('%Y-%m-%d')} {slot_label})"
+    sections = build_country_sections(results)
+
+    if not sections:
+        return [header + "\n\n오늘은 수집된 헤드라인이 없습니다."]
+
+    groups: list[list[str]] = []
+    current: list[str] = []
+    current_len = len(header)
+    for sec in sections:
+        add_len = len(sec) + 2
+        if current and current_len + add_len > TELEGRAM_MAX_CHARS:
+            groups.append(current)
+            current = []
+            current_len = len(header)
+        current.append(sec)
+        current_len += add_len
+    if current:
+        groups.append(current)
+
+    total = len(groups)
+    messages = []
+    for i, group in enumerate(groups, 1):
+        page_header = header if total == 1 else f"{header} ({i}/{total})"
+        messages.append(page_header + "\n\n" + "\n\n".join(group))
+    return messages
 
 
 def send_telegram_message(text: str) -> None:
@@ -322,10 +362,10 @@ def main() -> None:
         print("[info] using fallback (raw headlines) results")
         results = fallback_results(all_headlines)
 
-    message = format_telegram_message(results, slot_label_for(now_kst), now_kst)
-    print("[info] sending telegram message:\n" + message)
-
-    send_telegram_message(message)
+    messages = build_telegram_messages(results, slot_label_for(now_kst), now_kst)
+    for i, message in enumerate(messages, 1):
+        print(f"[info] sending telegram message {i}/{len(messages)}:\n" + message)
+        send_telegram_message(message)
     print("[info] done")
 
 

@@ -88,7 +88,10 @@ COUNTRIES = [
 ]
 
 # 국가당 Gemini에 넘길 헤드라인 후보 개수
-CANDIDATES_PER_COUNTRY = 5
+CANDIDATES_PER_COUNTRY = 8
+
+# 국가당 최종적으로 선택/전송할 뉴스 건수
+RESULTS_PER_COUNTRY = 3
 
 # 이 시간(시간) 이내에 게시된 항목만 "최신"으로 취급한다. 발행일이 없는 항목은 판단 불가로 보고 포함한다.
 FRESHNESS_WINDOW_HOURS = 72
