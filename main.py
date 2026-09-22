@@ -173,8 +173,12 @@ def build_gemini_prompt(all_headlines: dict) -> str:
     return "\n".join(lines)
 
 
+# 재시도해도 소용없고, 다른 모델을 시도해도 결과가 같을 상태코드 (API 키/권한 문제)
+ACCOUNT_LEVEL_FAILURE_STATUS = {401, 403}
+
+
 def _call_gemini_model(model: str, api_key: str, prompt: str) -> tuple[list[dict] | None, bool]:
-    """(결과, 다른_모델로_재시도할지) 튜플을 반환한다."""
+    """(결과, 다른_모델로_넘어갈지) 튜플을 반환한다."""
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{model}:generateContent?key={api_key}"
@@ -197,18 +201,21 @@ def _call_gemini_model(model: str, api_key: str, prompt: str) -> tuple[list[dict
             if isinstance(parsed, list):
                 return parsed, False
             print(f"[warn] gemini({model}) response is not a list", file=sys.stderr)
-            return None, False
+            return None, True  # 응답 형식 문제 -> 혹시 다른 모델은 다를 수 있으니 시도
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
             print(f"[warn] gemini({model}) call failed (attempt {attempt}): {exc}", file=sys.stderr)
+            if status in ACCOUNT_LEVEL_FAILURE_STATUS:
+                return None, False  # 키/권한 문제는 모델을 바꿔도 동일하게 실패함
             if status == 404:
-                return None, True  # 이 모델이 없음 -> 다음 모델 후보로 넘어감
+                return None, True  # 이 모델이 없음 -> 다음 모델 후보로 즉시 넘어감
+            # 429(rate limit), 5xx(서버 과부하/장애) 등은 아래에서 재시도 후 다음 모델로 넘어감
         except Exception as exc:  # noqa: BLE001
             print(f"[warn] gemini({model}) call failed (attempt {attempt}): {exc}", file=sys.stderr)
         if attempt < MAX_RETRIES:
             time.sleep(2 * (attempt + 1))
 
-    return None, False
+    return None, True  # 이 모델에서 재시도를 다 썼으니 다음 모델 후보로 넘어감
 
 
 def call_gemini(prompt: str) -> list[dict] | None:
