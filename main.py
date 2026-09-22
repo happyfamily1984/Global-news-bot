@@ -175,6 +175,38 @@ def build_gemini_prompt(all_headlines: dict) -> str:
 
 # 재시도해도 소용없고, 다른 모델을 시도해도 결과가 같을 상태코드 (API 키/권한 문제)
 ACCOUNT_LEVEL_FAILURE_STATUS = {401, 403}
+# 429(rate limit)/5xx(과부하) 재시도 간 대기 시간(초). Retry-After 헤더가 있으면 그쪽을 우선한다.
+GEMINI_RETRY_DELAYS = [3, 8, 20]
+
+
+def discover_gemini_models(api_key: str) -> list[str]:
+    """이 API 키로 실제 generateContent를 지원하는 모델 이름 목록을 조회한다.
+
+    모델 이름을 하드코딩해서 추측하는 대신, 계정/API 버전에 따라 달라질 수 있는
+    실제 사용 가능한 모델을 API에 직접 물어본다. 실패하면 빈 리스트를 반환한다.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] gemini model discovery failed: {exc}", file=sys.stderr)
+        return []
+
+    names = []
+    for m in data.get("models", []):
+        if "generateContent" not in m.get("supportedGenerationMethods", []):
+            continue
+        name = m.get("name", "")
+        short = name.split("/", 1)[1] if "/" in name else name
+        if short:
+            names.append(short)
+
+    # flash 계열을 우선 시도 (무료 티어 쿼터에 더 적합)
+    names.sort(key=lambda n: (0 if "flash" in n else 1, n))
+    print(f"[info] gemini models available for this key: {names}")
+    return names
 
 
 def _call_gemini_model(model: str, api_key: str, prompt: str) -> tuple[list[dict] | None, bool]:
@@ -191,7 +223,8 @@ def _call_gemini_model(model: str, api_key: str, prompt: str) -> tuple[list[dict
         },
     }
 
-    for attempt in range(MAX_RETRIES + 1):
+    for attempt in range(len(GEMINI_RETRY_DELAYS) + 1):
+        retry_after = None
         try:
             resp = requests.post(url, json=payload, timeout=60)
             resp.raise_for_status()
@@ -209,11 +242,20 @@ def _call_gemini_model(model: str, api_key: str, prompt: str) -> tuple[list[dict
                 return None, False  # 키/권한 문제는 모델을 바꿔도 동일하게 실패함
             if status == 404:
                 return None, True  # 이 모델이 없음 -> 다음 모델 후보로 즉시 넘어감
+            if exc.response is not None:
+                retry_after = exc.response.headers.get("Retry-After")
             # 429(rate limit), 5xx(서버 과부하/장애) 등은 아래에서 재시도 후 다음 모델로 넘어감
         except Exception as exc:  # noqa: BLE001
             print(f"[warn] gemini({model}) call failed (attempt {attempt}): {exc}", file=sys.stderr)
-        if attempt < MAX_RETRIES:
-            time.sleep(2 * (attempt + 1))
+
+        if attempt < len(GEMINI_RETRY_DELAYS):
+            wait = GEMINI_RETRY_DELAYS[attempt]
+            if retry_after:
+                try:
+                    wait = min(float(retry_after), 30)
+                except ValueError:
+                    pass
+            time.sleep(wait)
 
     return None, True  # 이 모델에서 재시도를 다 썼으니 다음 모델 후보로 넘어감
 
@@ -225,9 +267,10 @@ def call_gemini(prompt: str) -> list[dict] | None:
         return None
 
     env_model = os.environ.get("GEMINI_MODEL")
-    candidates = ([env_model] if env_model else []) + GEMINI_MODEL_CANDIDATES
+    discovered = discover_gemini_models(api_key)
+    candidates = ([env_model] if env_model else []) + discovered + GEMINI_MODEL_CANDIDATES
     # 중복 제거(순서 유지)
-    candidates = list(dict.fromkeys(candidates))
+    candidates = list(dict.fromkeys(c for c in candidates if c))
 
     for model in candidates:
         result, try_next = _call_gemini_model(model, api_key, prompt)
