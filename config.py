@@ -65,26 +65,6 @@ COUNTRIES = [
             "https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en",
         ],
     },
-    {
-        "code": "BR",
-        "name_kr": "브라질",
-        "flag": "🇧🇷",
-        "feeds": [
-            "https://g1.globo.com/rss/g1/",
-            "https://www.brasildefato.com.br/rss2.xml",
-            "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419",
-        ],
-    },
-    {
-        "code": "SA",
-        "name_kr": "사우디",
-        "flag": "🇸🇦",
-        "feeds": [
-            "https://www.arabnews.com/rss.xml",
-            "https://saudigazette.com.sa/rssFeed/1",
-            "https://news.google.com/rss?hl=ar&gl=SA&ceid=SA:ar",
-        ],
-    },
 ]
 
 # 국가당 Gemini에 넘길 헤드라인 후보 개수
