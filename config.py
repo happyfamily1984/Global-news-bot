@@ -55,16 +55,6 @@ COUNTRIES = [
             "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja",
         ],
     },
-    {
-        "code": "IN",
-        "name_kr": "인도",
-        "flag": "🇮🇳",
-        "feeds": [
-            "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
-            "https://www.thehindu.com/news/national/feeder/default.rss",
-            "https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en",
-        ],
-    },
 ]
 
 # 국가당 Gemini에 넘길 헤드라인 후보 개수
