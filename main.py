@@ -400,12 +400,7 @@ def send_telegram_message(text: str) -> None:
 
 
 def slot_label_for(now_kst: datetime) -> str:
-    hour = now_kst.hour
-    if hour < 12:
-        return "오전 브리핑"
-    if hour < 18:
-        return "오후 브리핑"
-    return "저녁 브리핑"
+    return "오전 브리핑" if now_kst.hour < 12 else "저녁 브리핑"
 
 
 def main() -> None:

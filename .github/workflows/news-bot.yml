@@ -2,9 +2,8 @@ name: Global News Bot
 
 on:
   schedule:
-    # KST 09:00 / 13:00 / 21:00 = UTC 00:00 / 04:00 / 12:00 (KST는 DST 없음)
+    # KST 09:00 / 21:00 = UTC 00:00 / 12:00 (KST는 DST 없음)
     - cron: "0 0 * * *"
-    - cron: "0 4 * * *"
     - cron: "0 12 * * *"
   workflow_dispatch: {}
 
