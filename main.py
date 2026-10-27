@@ -152,6 +152,10 @@ def build_gemini_prompt(all_headlines: dict) -> str:
         "- 같은 국가 안에서는 서로 다른 주제/사건을 다루도록 다양성을 주세요(같은 사건의 후속 기사 반복 금지).",
         "",
         "선택한 각 뉴스는 한국어로 제목(한 줄, 20자 내외)과 2문장 이내 요약을 작성하세요.",
+        "그리고 각 뉴스마다 다음 두 가지도 추가로 작성하세요:",
+        "- translation_kr: 후보로 주어진 원문 제목/스니펫을 보다 완전하고 정확하게 한국어로 번역한 문장(2~3문장).",
+        "  summary_kr과 중복되지 않게, 원문 표현에 더 충실하게 작성하세요.",
+        "- detail_kr: 이 뉴스의 배경/맥락과 왜 중요한지, 예상되는 파급효과를 설명하는 상세 해석(3~5문장).",
         "후보가 없는 국가는 결과에서 제외하세요.",
         "",
         "마지막으로, 위에서 선택한 뉴스 전체를 종합해서 현재 국제정세를 분석하는 글을 작성하세요.",
@@ -160,8 +164,8 @@ def build_gemini_prompt(all_headlines: dict) -> str:
         "한국어로 4~6문장 분량으로 작성하세요.",
         "",
         "반드시 아래 JSON 객체 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요:",
-        '{"items": [{"country_code": "US", "title_kr": "...", "summary_kr": "...", "link": "..."}, ...], '
-        '"analysis": "..."}',
+        '{"items": [{"country_code": "US", "title_kr": "...", "summary_kr": "...", '
+        '"translation_kr": "...", "detail_kr": "...", "link": "..."}, ...], "analysis": "..."}',
         "",
         "### 헤드라인 후보",
     ]
@@ -325,12 +329,20 @@ def build_country_sections(results: list[dict]) -> list[str]:
         for i, item in enumerate(items, 1):
             title = html.escape(item.get("title_kr", "").strip())
             summary = html.escape(item.get("summary_kr", "").strip())
-            link = item.get("link", "").strip()
+            translation = html.escape(item.get("translation_kr", "").strip())
+            detail = html.escape(item.get("detail_kr", "").strip())
             lines.append(f"{i}. {title}")
             if summary:
                 lines.append(f"   {summary}")
-            if link:
-                lines.append(f'   <a href="{html.escape(link, quote=True)}">링크</a>')
+            if translation or detail:
+                lines.append("   📖 <b>더 자세히</b>")
+                quote_parts = []
+                if translation:
+                    quote_parts.append(f"🇰🇷 번역: {translation}")
+                if detail:
+                    quote_parts.append(f"🔍 해석: {detail}")
+                quote_body = "\n\n".join(quote_parts)
+                lines.append(f"<blockquote expandable>{quote_body}</blockquote>")
         sections.append("\n".join(lines))
 
     return sections
